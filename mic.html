@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <h2>Raven microphone test</h2>
+  <button id="start">Start</button>
+  <button id="stop" disabled>Stop</button>
+  <p id="status">Not recording</p>
+  <script>
+    let ws, audioCtx, stream;
+    let buffer = [];
+    let buffered = 0;
+
+    const workletCode = `
+      class Capture extends AudioWorkletProcessor {
+        process(inputs) {
+          const input = inputs[0][0];
+          if (input) this.port.postMessage(input.slice());
+          return true;
+        }
+      }
+      registerProcessor("capture", Capture);
+    `;
+
+    function flush() {
+      if (buffered === 0) return;
+      const out = new Int16Array(buffered);
+      let offset = 0;
+      for (const part of buffer) {
+        out.set(part, offset);
+        offset += part.length;
+      }
+      ws.send(out.buffer);
+      buffer = [];
+      buffered = 0;
+    }
+
+    document.getElementById("start").onclick = async () => {
+      ws = new WebSocket("ws://127.0.0.1:8000/ws-audio");
+      await new Promise((resolve, reject) => {
+        ws.onopen = resolve;
+        ws.onerror = reject;
+      });
+
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new AudioContext({ sampleRate: 16000 });
+
+      const url = URL.createObjectURL(
+        new Blob([workletCode], { type: "application/javascript" })
+      );
+      await audioCtx.audioWorklet.addModule(url);
+
+      const source = audioCtx.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(audioCtx, "capture", { numberOfOutputs: 0 });
+
+      node.port.onmessage = (event) => {
+        const floats = event.data;
+        const ints = new Int16Array(floats.length);
+        for (let i = 0; i < floats.length; i++) {
+          const s = Math.max(-1, Math.min(1, floats[i]));
+          ints[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        buffer.push(ints);
+        buffered += ints.length;
+        if (buffered >= 4096) flush();
+      };
+
+      source.connect(node);
+      document.getElementById("start").disabled = true;
+      document.getElementById("stop").disabled = false;
+      document.getElementById("status").textContent = "Recording... speak now";
+    };
+
+    document.getElementById("stop").onclick = () => {
+      flush();
+      stream.getTracks().forEach((t) => t.stop());
+      audioCtx.close();
+      ws.close();
+      document.getElementById("start").disabled = false;
+      document.getElementById("stop").disabled = true;
+      document.getElementById("status").textContent = "Stopped. Check your raven folder.";
+    };
+  </script>
+</body>
+</html>

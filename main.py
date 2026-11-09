@@ -1,3 +1,6 @@
+import wave
+from fastapi.responses import FileResponse
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
@@ -45,3 +48,24 @@ PAGE = """
 @app.get("/test")
 def test_page():
     return HTMLResponse(PAGE)
+@app.get("/mic")
+def mic_page():
+    return FileResponse("mic.html")
+
+@app.websocket("/ws-audio")
+async def audio_ws(websocket: WebSocket):
+    await websocket.accept()
+    chunks = []
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            chunks.append(data)
+    except WebSocketDisconnect:
+        pass
+    pcm = b"".join(chunks)
+    with wave.open("mic_test.wav", "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(pcm)
+    print(f"Saved mic_test.wav ({len(pcm)} bytes)")
